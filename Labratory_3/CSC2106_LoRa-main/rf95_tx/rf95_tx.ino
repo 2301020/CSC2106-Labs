@@ -1,101 +1,141 @@
-// Pureland version
+// LoRa 9x_TX
+// -*- mode: C++ -*-
+// Example sketch showing how to create a simple messaging client (transmitter)
+// with the RH_RF95 class. RH_RF95 class does not provide for addressing or
+// reliability, so you should only use RH_RF95 if you do not need the higher
+// level messaging abilities.
+// It is designed to work with the other example LoRa9x_RX
 
-// Libraries for SSD1306 LED
+#include <SPI.h>
+#include <RH_RF95.h>
+#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
-// OLED FeatherWing buttons map to different pins depending on board.
-// The I2C (Wire) bus may also be different.
-#if defined(ESP8266)
-  #define BUTTON_A  0
-  #define BUTTON_B 16
-  #define BUTTON_C  2
-  #define WIRE Wire
-#elif defined(ARDUINO_ADAFRUIT_FEATHER_ESP32C6)
-  #define BUTTON_A  7
-  #define BUTTON_B  6
-  #define BUTTON_C  5
-  #define WIRE Wire
-#elif defined(ESP32)
-  #define BUTTON_A 15
-  #define BUTTON_B 32
-  #define BUTTON_C 14
-  #define WIRE Wire
-#elif defined(ARDUINO_STM32_FEATHER)
-  #define BUTTON_A PA15
-  #define BUTTON_B PC7
-  #define BUTTON_C PC5
-  #define WIRE Wire
-#elif defined(TEENSYDUINO)
-  #define BUTTON_A  4
-  #define BUTTON_B  3
-  #define BUTTON_C  8
-  #define WIRE Wire
-#elif defined(ARDUINO_FEATHER52832)
-  #define BUTTON_A 31
-  #define BUTTON_B 30
-  #define BUTTON_C 27
-  #define WIRE Wire
-#elif defined(ARDUINO_ADAFRUIT_FEATHER_RP2040)
-  #define BUTTON_A  9
-  #define BUTTON_B  8
-  #define BUTTON_C  7
-  #define WIRE Wire
-#else // 32u4, M0, M4, nrf52840 and 328p
-  #define BUTTON_A  9
-  #define BUTTON_B  6
-  #define BUTTON_C  5
-  #define WIRE Wire
-#endif
+#define RFM95_CS 10
+#define RFM95_RST 9
+#define RFM95_INT 2
+#define node_id "B"
+ 
+// Change to 434.0 or other frequency, must match RX's freq!
+#define RF95_FREQ 915.0
 
-Adafruit_SSD1306 display = Adafruit_SSD1306(128, 32, &WIRE);
+#define MAX_RETRIES 3  // Maximum number of retries
+#define ACK_TIMEOUT 500 // Timeout for ACK (milliseconds)
 
-int number = 0;
+#define SCREEN_WIDTH 128  // OLED display width, in pixels
+#define SCREEN_HEIGHT 32  // OLED display height, in pixels
 
-void setup() {
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
+#define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+ 
+// Singleton instance of the radio driver
+RH_RF95 rf95(RFM95_CS, RFM95_INT);
+
+void(* resetFunc) (void) = 0; //declare reset function at address 0
+
+void setup() 
+{
   Serial.begin(9600);
+  delay(100);
 
-  Serial.println("OLED FeatherWing test");
-  // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C); // Address 0x3C for 128x32
+  pinMode(RFM95_RST, OUTPUT);
+  digitalWrite(RFM95_RST, LOW);
+  delay(10);
+  digitalWrite(RFM95_RST, HIGH);
+  delay(10);
 
-  Serial.println("OLED begun");
+  while (!rf95.init()) {
+      Serial.println(F("LoRa radio init failed"));
+      delay(1000); // Important: Keep this delay for debugging.
+  }
+  Serial.println(F("LoRa radio init OK!"));
 
-  // Show image buffer on the display hardware.
-  // Since the buffer is intialized with an Adafruit splashscreen
-  // internally, this will display the splashscreen.
-  display.display();
-  delay(1000);
+  // Defaults after init are 915.0MHz, modulation GFSK_Rb250Fd250, +13dbM
+  if (!rf95.setFrequency(RF95_FREQ)) {
+    Serial.println(F("setFrequency failed"));
+    while (1);
+  }
 
-  // Clear the buffer.
-  display.clearDisplay();
-  display.display();
+  Serial.print(F("Set Freq to: ")); Serial.println(RF95_FREQ);
+  rf95.setTxPower(13, false);
 
-  Serial.println("IO test");
-
-  pinMode(BUTTON_A, INPUT_PULLUP);
-  pinMode(BUTTON_B, INPUT_PULLUP);
-  pinMode(BUTTON_C, INPUT_PULLUP);
-
-  // text display tests
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+      Serial.println(F("SSD1306 allocation failed"));
+      for (;;) { delay(1000); }
+  }
   display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0,0);
-  display.print("Connecting to SSID\n'adafruit':");
-  display.print("connected!");
-  display.println("IP: 10.0.1.23");
-  display.println("Sending val #0");
-  display.setCursor(0,0);
-  display.display(); // actually display all of the above
-}
-
-void loop() {
+  display.setTextColor(WHITE);
   display.clearDisplay();
+  display.println("LoRa TX");
   display.display();
+}
+ 
+int16_t packetnum = 0;  // packet counter, we increment per transmission
+ 
+void loop() {
+  Serial.println(F("Sending to rf95_rx"));
 
-  display.print(to_string(number));
-  number += 1;
-  delay(1000);
-  yield();
-  display.display();
+  uint8_t data[32];
+  snprintf((char*)data, sizeof(data), "Hello World %d from %s", packetnum++, node_id);
+  uint8_t len = strlen((char*)data); // Calculate message length
+
+  Serial.print(F("Sending message: ")); Serial.println((char*)data);
+  Serial.print(F("Message length: ")); Serial.println(len); // Send the length too!
+
+  bool ackReceived = false;
+  int16_t sentRSSI = 0;
+    for (int retry = 0; retry < MAX_RETRIES; retry++) {
+        Serial.print(F("Retry: ")); Serial.println(retry + 1);
+
+        if (!rf95.send(data, len)) {
+            Serial.println(F("Send failed"));
+            display.clearDisplay();
+            display.println(F("Send failed"));
+            display.display();
+            delay(1000);
+            continue;
+        }
+
+        Serial.println(F("Wait for packet to complete..."));
+        rf95.waitPacketSent();
+        sentRSSI = rf95.lastRssi(); // Get RSSI of sent packet
+        Serial.print(F("Sent RSSI: ")); Serial.println(sentRSSI, DEC);
+
+        uint8_t ackBuf[RH_RF95_MAX_MESSAGE_LEN];
+        uint8_t ackLen = sizeof(ackBuf);
+        if (rf95.waitAvailableTimeout(ACK_TIMEOUT)) {
+            if (rf95.recv(ackBuf, &ackLen)) {
+                if (strncmp((char*)ackBuf, "ACK", 3) == 0) {
+                    Serial.println(F("ACK received!"));
+                    ackReceived = true;
+                    break;
+                } else {
+                    Serial.print(F("Unexpected ACK: ")); Serial.println((char*)ackBuf);
+                }
+            } else {
+                Serial.println(F("ACK receive failed"));
+            }
+        } else {
+            Serial.println(F("No ACK received"));
+        }
+        delay(100);
+    }
+
+    if (ackReceived) {
+        Serial.println(F("Message sent successfully with ACK"));
+        display.clearDisplay();
+        display.print(F("Sent: ")); display.println(packetnum-1);  //Display packet number
+        display.print(F("RSSI: ")); display.println(sentRSSI); //Display RSSI
+        display.display();
+
+    } else {
+        Serial.println(F("Message sending failed after multiple retries"));
+        display.clearDisplay();
+        display.println(F("Message failed"));
+        display.display();
+    }
+    delay(10000);
 }
