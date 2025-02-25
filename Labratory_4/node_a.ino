@@ -20,13 +20,14 @@ PubSubClient client(espClient);
 // host.  
 const char* ssid        = "Xperia_3789";
 const char* password    = "u4bvtjuwn5ph95f";
-const char* mqtt_server = "192.168.230.8";
+const char* mqtt_server = "192.168.219.8";
 
 unsigned long lastMsg = 0;
 #define MSG_BUFFER_SIZE (50)
 char msg[MSG_BUFFER_SIZE]; 
 int value = 0;
 bool isLedOn = false; 
+bool isLedToggle = false; 
 
 void setupWifi();
 void callback(char* topic, byte* payload, unsigned int length);
@@ -37,7 +38,7 @@ void setup() {
     M5.Lcd.setRotation(3);
     setupWifi();
     client.setServer(mqtt_server, 1883);  // Sets the server details.  
-    // client.setCallback(callback);  		  // Sets the message callback function. 
+    client.setCallback(callback);  		  // Sets the message callback function.  
     pinMode(M5_BUTTON_HOME, INPUT);
     pinMode(M5_LED, OUTPUT); 
 }
@@ -46,7 +47,7 @@ void loop() {
     digitalWrite(M5_LED, !isLedOn);
 
     if(digitalRead(M5_BUTTON_HOME) == LOW){
-      isLedOn = !isLedOn;
+      isLedToggle = !isLedToggle;
       // Home button "debouncer" logic
       while(digitalRead(M5_BUTTON_HOME) == LOW);
     }
@@ -68,10 +69,10 @@ void loop() {
         M5.Lcd.println(msg);
         client.publish("M5Stack", msg);  // Publishes a message to the specified
                                          // topic. 
-        if (isLedOn) {
-          client.publish("toggle_led", "1"); 
+        if (isLedToggle) {
+          client.publish("node_a/toggle_led", "1"); 
         } else {
-          client.publish("toggle_led", "0"); 
+          client.publish("node_a/toggle_led", "0"); 
         } 
                                         
         if (value % 7 == 0) {
@@ -95,13 +96,13 @@ void setupWifi() {
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-    M5.Lcd.print("Message arrived [");
-    M5.Lcd.print(topic);
-    M5.Lcd.print("] ");
-    for (int i = 0; i < length; i++) {
-        M5.Lcd.print((char)payload[i]);
+    if(strcmp(topic, "node_b/toggle_led") == 0){
+      if (payload[0] == '1') {
+          isLedOn = true;
+      } else {
+          isLedOn = false;
+      }
     }
-    M5.Lcd.println();
 }
 
 void reConnect() {
@@ -115,9 +116,9 @@ void reConnect() {
             M5.Lcd.printf("\nSuccess\n");
             // Once connected, publish an announcement to the topic.
             
-            // client.publish("csc2006", "Hello CSC2006");
+            client.publish("csc2006", "Hello CSC2006");
             // ... and resubscribe.  
-            // client.subscribe("M5Stack");
+            client.subscribe("node_b/toggle_led");
         } else {
             M5.Lcd.print("failed, rc=");
             M5.Lcd.print(client.state());
